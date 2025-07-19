@@ -1,3 +1,4 @@
+import requests
 import torch
 import torch.nn as nn
 import pickle
@@ -29,40 +30,37 @@ class WasteClassifier:
         self.load_model()
     
     def load_model(self):
-        """Load the trained model with proper device mapping"""
+        """Load the trained model from HuggingFace or local storage"""
         try:
-            # Try multiple possible paths
-            possible_paths = [
-                os.path.join(os.path.dirname(__file__), '..', 'models', 'waste_classifier_6cat_production.pkl'),
-                os.path.join(os.path.dirname(__file__), 'models', 'waste_classifier_6cat_production.pkl'),
-                os.path.join('app', 'models', 'waste_classifier_6cat_production.pkl'),
-                os.path.join('models', 'waste_classifier_6cat_production.pkl'),
-                'waste_classifier_6cat_production.pkl'
-            ]
+            model_path = 'waste_classifier_6cat_production.pkl'
+            model_url = "https://huggingface.co/serlinscript/trash-classfier/resolve/main/waste_classifier_6cat_production.pkl"
             
-            model_path = None
-            for path in possible_paths:
-                if os.path.exists(path):
-                    model_path = path
-                    break
+            # Check if model exists locally, if not download it
+            if not os.path.exists(model_path):
+                logger.info("Model file not found locally. Downloading from HuggingFace...")
+                try:
+                    response = requests.get(model_url, timeout=300)  # 5 minute timeout
+                    response.raise_for_status()  # Raise an exception for bad status codes
+                    
+                    with open(model_path, 'wb') as f:
+                        f.write(response.content)
+                    logger.info("Model downloaded successfully.")
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Failed to download model: {str(e)}")
+                    self.create_model_architecture()
+                    return
             
-            if model_path is None:
-                logger.error("Model file not found in any expected location")
-                logger.info("Please place 'waste_classifier_6cat_production.pkl' in the app/models/ directory")
-                # Create model architecture as fallback
-                self.create_model_architecture()
-                return
-            
+            # Load the model
             logger.info(f"Loading model from: {model_path}")
             
             # Method 1: Try loading with torch.load
             try:
-                # Load the model with proper device mapping
                 with open(model_path, 'rb') as f:
                     # Set the default tensor type to CPU to avoid CUDA issues
                     torch.set_default_tensor_type('torch.FloatTensor')
                     
-                    # Load the model (removed the extra comma)
+                    # Load the model with proper device mapping
                     loaded_data = torch.load(f, map_location=self.device)
                     
                     # Handle different formats
@@ -70,12 +68,17 @@ class WasteClassifier:
                         if 'model' in loaded_data:
                             self.model = loaded_data['model']
                         elif 'state_dict' in loaded_data:
-                            # If it's a state dict, we need to create the architecture first
+                            # If it's a state dict, create architecture first
                             self.create_model_architecture()
                             self.model.load_state_dict(loaded_data['state_dict'])
                         else:
-                            # Assume the dict itself is the model
-                            self.model = loaded_data
+                            # Try to find the actual model in the dict
+                            for key, value in loaded_data.items():
+                                if hasattr(value, 'forward') or hasattr(value, '__call__'):
+                                    self.model = value
+                                    break
+                            if self.model is None:
+                                raise ValueError("No valid model found in loaded data")
                     else:
                         # Direct model object
                         self.model = loaded_data
@@ -103,7 +106,13 @@ class WasteClassifier:
                         if 'model' in loaded_data:
                             self.model = loaded_data['model']
                         else:
-                            self.model = loaded_data
+                            # Try to find the actual model in the dict
+                            for key, value in loaded_data.items():
+                                if hasattr(value, 'forward') or hasattr(value, '__call__'):
+                                    self.model = value
+                                    break
+                            if self.model is None:
+                                raise ValueError("No valid model found in pickle data")
                     else:
                         self.model = loaded_data
                     
@@ -120,7 +129,7 @@ class WasteClassifier:
             except Exception as e:
                 logger.warning(f"pickle.load also failed: {e}")
             
-            # If all methods fail, create fresh architecture
+            # If all loading methods fail, create fresh architecture
             logger.error("All loading methods failed, creating fresh model architecture")
             self.create_model_architecture()
             
@@ -176,7 +185,7 @@ class WasteClassifier:
                 raise ValueError("Model not loaded properly")
             
             # Additional check to ensure model is callable
-            if not hasattr(self.model, '__call__'):
+            if not (hasattr(self.model, '__call__') or hasattr(self.model, 'forward')):
                 raise ValueError("Model is not callable - it might be a dictionary instead of a model object")
             
             # Preprocess image
@@ -211,7 +220,7 @@ class WasteClassifier:
             logger.error(f"Model loaded: {self.model_loaded}")
             raise
 
-# Global instance
+# Global instance with better error handling
 try:
     waste_classifier = WasteClassifier()
     logger.info("WasteClassifier initialized successfully")
@@ -226,6 +235,12 @@ except Exception as e:
             self.model_loaded = False
         
         def predict(self, image):
-            raise ValueError("Model failed to load properly. Please check the model file.")
+            raise ValueError("Model failed to load properly. Please check the model file and network connection.")
+        
+        def load_model(self):
+            pass
+        
+        def preprocess_image(self, image):
+            return None
     
     waste_classifier = DummyClassifier()
